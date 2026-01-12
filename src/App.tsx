@@ -5,15 +5,17 @@ import "./App.css";
 
 function App() {
   useEffect(() => {
-    const detectionConfidence = 0.6;
-    const maskThreshold = 0.9;
-    const fixedInferenceFps = 10;
-    const modelInputWidth = 384;
-    const modelInputHeight = 384;
-    const maskColor = { r: 255, g: 0, b: 0, a: 0.45 };
+    const detectionConfidence = 0.6; // 탐지 신뢰도 임계값
+    const maskThreshold = 0.9; // 마스크 이진화 임계값
+    const fixedInferenceFps = 10; // 고정 추론 FPS 설정 (0 또는 음수는 무제한)
+    const modelInputWidth = 384; // 모델 입력 넓이 크기
+    const modelInputHeight = 384; // 모델 입력 높이 크기
+    // 마스크 색상 설정
+    const maskColor = { r: 255, g: 255, b: 0, a: 0.3 };
     function sigmoid(x: number) {
       return 1 / (1 + Math.exp(-x));
     }
+    // 값을 min과 max 사이로 클램프
     function clamp(value: number, min: number, max: number) {
       return Math.max(min, Math.min(max, value));
     }
@@ -28,6 +30,7 @@ function App() {
     const modelInputContext = modelInputCanvas.getContext("2d", {
       willReadFrequently: true,
     }) as CanvasRenderingContext2D;
+    // 전체 마스크 색상용 캔버스
     const maskColorCanvas = document.createElement("canvas");
     const maskColorContext = maskColorCanvas.getContext("2d", {
       willReadFrequently: true,
@@ -83,7 +86,8 @@ function App() {
         const inferenceFrameWidth = Math.round(
           (videoWidth / videoHeight) * modelInputHeight
         );
-        const letterboxScale = Math.round(
+        const letterboxScale = Math.min(
+          1,
           modelInputWidth / inferenceFrameWidth
         );
         const letterboxNewWidth = Math.round(
@@ -131,35 +135,32 @@ function App() {
         const outputs = await ortSession.run({
           [modelInputName]: inputTensor,
         });
-        lastRun = performance.now() - end;
-        for (const t of Object.values(outputs)) {
-          if (t.dims.length === 3 && t.dims[0] === 1) {
-            const N = Math.max(t.dims[1], t.dims[2]);
-            const C = Math.min(t.dims[1], t.dims[2]);
-            if (N >= 1000 && C >= 8) {
-              if (!detectionTensor) detectionTensor = t;
-              else {
-                const curN = Math.max(
-                  detectionTensor.dims[1],
-                  detectionTensor.dims[2]
-                );
-                if (N > curN) detectionTensor = t;
-              }
-            }
+        lastRun = performance.now() - end; // 추론 시간 기록
+        inputTensor.dispose(); // 메모리 해제
+        for (const tensor of Object.values(outputs)) {
+          if (tensor.dims.length === 3 && tensor.dims[0] === 1) {
+            const boxCount = Math.max(tensor.dims[1], tensor.dims[2]);
+            if (
+              boxCount >= 1000 &&
+              Math.min(tensor.dims[1], tensor.dims[2]) >= 8 &&
+              (!detectionTensor ||
+                boxCount >
+                  Math.max(detectionTensor.dims[1], detectionTensor.dims[2]))
+            )
+              detectionTensor = tensor;
           }
-          if (t.dims.length === 4 && t.dims[0] === 1) {
-            const nm = t.dims[1];
-            const mh = t.dims[2];
-            const mw = t.dims[3];
-            if (nm >= 8 && mh >= 16 && mw >= 16) {
-              if (!prototypeTensor) prototypeTensor = t;
-              else {
-                const curArea =
-                  prototypeTensor.dims[2] * prototypeTensor.dims[3];
-                const area = mh * mw;
-                if (area > curArea) prototypeTensor = t;
-              }
-            }
+          if (tensor.dims.length === 4 && tensor.dims[0] === 1) {
+            const nm = tensor.dims[1]; // 마스크 채널 수
+            const mh = tensor.dims[2]; // 마스크 높이
+            const mw = tensor.dims[3]; // 마스크 넓이
+            if (
+              nm >= 8 &&
+              mh >= 16 &&
+              mw >= 16 &&
+              (!prototypeTensor ||
+                mh * mw > prototypeTensor.dims[2] * prototypeTensor.dims[3])
+            )
+              prototypeTensor = tensor;
           }
         }
         if (!detectionTensor || !prototypeTensor) return;
@@ -188,14 +189,11 @@ function App() {
               boxIndex * numChannels + channelIndex
             ];
         }
-        const classCountWithoutObj = numChannels - 4 - numberOfMaskChannels;
-        const classCountWithObj = numChannels - 5 - numberOfMaskChannels;
         const parseVariant = (hasObjectness: boolean) => {
-          const classCount = hasObjectness
-            ? classCountWithObj
-            : classCountWithoutObj;
-          if (classCount <= 0) return [];
           const classBaseIndex = hasObjectness ? 5 : 4;
+          const classCount =
+            numChannels - classBaseIndex - numberOfMaskChannels;
+          if (classCount <= 0) return [];
           const coefBaseIndex = classBaseIndex + classCount;
           const boxes = [];
           for (let i = 0; i < numBoxes; i++) {
@@ -423,7 +421,6 @@ function App() {
         lower.pop();
         const hull = lower.concat(upper);
         if (hull.length >= 4) {
-          // 3) hull ring + perimeter
           const ring = hull.slice();
           ring.push(hull[0]);
           let per = 0;
@@ -433,7 +430,6 @@ function App() {
             per += Math.hypot(b.x - a.x, b.y - a.y);
           }
           per = Math.max(1, per);
-          // auto-tune eps to get 4 points
           let eps = per * 0.01;
           let simp = null;
           for (let iter = 0; iter < 35; iter++) {
@@ -539,6 +535,7 @@ function App() {
           overlayContext.stroke();
           overlayContext.restore();
         }
+        // 마스크 색상 오버레이 그리기
         maskColorCanvas.width = roiWidth;
         maskColorCanvas.height = roiHeight;
         const maskColorImageData = maskColorContext.createImageData(
@@ -552,10 +549,7 @@ function App() {
             out[p] = maskColor.r;
             out[p + 1] = maskColor.g;
             out[p + 2] = maskColor.b;
-            out[p + 3] = Math.max(
-              0,
-              Math.min(255, Math.round((maskColor.a ?? 0.45) * 255))
-            );
+            out[p + 3] = Math.min(255, Math.round(maskColor.a * 255));
           } else {
             out[p] = 0;
             out[p + 1] = 0;
@@ -563,10 +557,12 @@ function App() {
             out[p + 3] = 0;
           }
         }
-        // maskColorContext.putImageData(maskColorImageData, 0, 0);
+        // 마스크 색상 오버레이 그리기
+        maskColorContext.putImageData(maskColorImageData, 0, 0);
         overlayContext.save();
         overlayContext.imageSmoothingEnabled = true;
-        // overlayContext.drawImage(maskColorCanvas, drawX, drawY, drawW, drawH);
+        // draw 마스크 색상 오버레이
+        overlayContext.drawImage(maskColorCanvas, drawX, drawY, drawW, drawH);
         overlayContext.fillStyle = "rgba(0,0,0,0.95)";
         overlayContext.font = `900 ${Math.round(
           Math.min(overlayCanvas.width, overlayCanvas.height) * 0.06
@@ -589,7 +585,7 @@ function App() {
         // 200ms마다 화면 표시 업데이트
         if (timestamp - lastUiUpdate > 200) {
           lastUiUpdate = timestamp;
-          //  화면에 텍스트로 표시
+          // 화면에 텍스트로 표시
           const status = document.getElementById("status");
           if (status) {
             status.textContent = `사이클 ${lastInfer.toFixed(
