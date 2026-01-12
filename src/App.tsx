@@ -426,7 +426,6 @@ function App() {
           // 3) hull ring + perimeter
           const ring = hull.slice();
           ring.push(hull[0]);
-
           let per = 0;
           for (let i = 0; i < ring.length - 1; i++) {
             const a = ring[i],
@@ -685,6 +684,8 @@ function App() {
       <div className="hud-top">
         <button id="start">시작</button>
         <button id="stop">정지</button>
+        <button id="switch">전환</button>
+        <div id="status"></div>
       </div>
     </div>
   );
