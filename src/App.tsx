@@ -43,16 +43,16 @@ function App() {
     let lastInfer = 0; // 전체(전처리+run+후처리) ms
     let lastRun = 0; // run()만 ms
     let ortSession: ort.InferenceSession | null = null;
-    let mediaStream: MediaStream | null = null;
     let modelInputName: string | null = null;
     const clearOverlay = () => {
       overlayContext.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
     };
     const stopMediaStream = () => {
-      if (mediaStream) {
-        for (const track of mediaStream.getTracks()) track.stop();
+      if (!videoElement.srcObject) return;
+      for (const track of (videoElement.srcObject as MediaStream).getTracks()) {
+        track.stop();
       }
-      mediaStream = null;
+      videoElement.srcObject = null;
     };
     const resizeOverlayToVideo = () => {
       const videoRect = videoElement.getBoundingClientRect();
@@ -605,7 +605,7 @@ function App() {
           modelInputName = ortSession.inputNames[0];
         }
         stopMediaStream();
-        mediaStream = await navigator.mediaDevices.getUserMedia({
+        videoElement.srcObject = await navigator.mediaDevices.getUserMedia({
           audio: false,
           video: {
             facingMode: { ideal: "environment" },
@@ -614,7 +614,6 @@ function App() {
             frameRate: { ideal: 60 },
           },
         });
-        videoElement.srcObject = mediaStream;
         await videoElement.play();
         resizeOverlayToVideo();
         window.addEventListener("scroll", resizeOverlayToVideo, {
@@ -646,19 +645,19 @@ function App() {
       clearOverlay();
     });
     document.getElementById("switch")!!.addEventListener("click", async () => {
+      let camIndex = 0;
+      if (!videoElement.srcObject) return;
       const devices = await navigator.mediaDevices.enumerateDevices();
       const cams = devices.filter((device) => device.kind === "videoinput");
-      let camIndex = 0;
-      if (!mediaStream) return;
-      const curId = mediaStream.getVideoTracks()[0].getSettings().deviceId;
-      if (curId) {
-        const idx = cams.findIndex((cam) => cam.deviceId === curId);
+      const id = (videoElement.srcObject as MediaStream)
+        .getVideoTracks()[0]
+        .getSettings().deviceId;
+      if (id) {
+        const idx = cams.findIndex((cam) => cam.deviceId === id);
         if (idx >= 0) camIndex = (idx + 1) % cams.length;
       }
       stopMediaStream();
-      videoElement.srcObject = null;
-      clearOverlay();
-      mediaStream = await navigator.mediaDevices.getUserMedia({
+      videoElement.srcObject = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: {
           deviceId: { exact: cams[camIndex].deviceId }, // ✅ 핵심: deviceId 사용
@@ -666,8 +665,7 @@ function App() {
           height: { ideal: 1080 },
           frameRate: { ideal: 60 },
         },
-      });
-      videoElement.srcObject = mediaStream; // ✅ 새 스트림을 video에 연결
+      }); // ✅ 새 스트림을 video에 연결
       await videoElement.play();
       resizeOverlayToVideo();
     });
